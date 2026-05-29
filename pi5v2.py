@@ -1,244 +1,115 @@
-import RPi.GPIO as GPIO
-import spidev
+from machine import Pin, SPI
 import time
 
-# ── Pin setup (BCM numbering) ─────────────────────────────────────────
-DIR_PIN  = 2
-STEP_PIN = 3
+DIR_PIN  = Pin(2,  Pin.OUT, value=0)
+STEP_PIN = Pin(3,  Pin.OUT, value=0)
+CS_PIN   = Pin(8,  Pin.OUT, value=1)
 
-GPIO.setmode(GPIO.BCM)
-GPIO.setup(DIR_PIN,  GPIO.OUT, initial=GPIO.LOW)
-GPIO.setup(STEP_PIN, GPIO.OUT, initial=GPIO.LOW)
+spi = SPI(0,
+          baudrate=500_000,
+          polarity=0,
+          phase=1,
+          sck=Pin(11),
+          mosi=Pin(10),
+          miso=Pin(9))
 
-spi = spidev.SpiDev()
-spi.open(0, 0)          # bus 0, CE0 = GPIO8
-spi.max_speed_hz = 500_000
-spi.mode = 0b01         # SPI Mode 1
-
-# ── AMIS-30543 register map ───────────────────────────────────────────
-WR      = 0x80
-REG_CR0 = 0x01
-REG_CR1 = 0x02
-REG_CR2 = 0x03
-REG_CR3 = 0x09
+WR       = 0x80
+REG_CR0  = 0x01
+REG_CR1  = 0x02
+REG_CR2  = 0x03
+REG_CR3  = 0x09
 
 def write_reg(reg, value):
-    spi.xfer2([WR | reg, value])
+    CS_PIN.value(0)
+    time.sleep_us(1)
+    spi.write(bytes([WR | reg, value]))
+    time.sleep_us(1)
+    CS_PIN.value(1)
 
 def reset_settings():
-    for reg in [REG_CR0, REG_CR1, REG_CR2, REG_CR3]:
-        write_reg(reg, 0x00)
+    write_reg(REG_CR0, 0x00)
+    write_reg(REG_CR1, 0x00)
+    write_reg(REG_CR2, 0x00)
+    write_reg(REG_CR3, 0x00)
 
 def set_current_milliamps(ma):
     table = [
-        (100,0x00),(174,0x01),(343,0x02),(490,0x03),(530,0x04),
-        (680,0x05),(770,0x06),(870,0x07),(1000,0x08),(1060,0x09),
-        (1190,0x0A),(1260,0x0B),(1400,0x0C),(1490,0x0D),(1680,0x0E),
-        (1800,0x0F),(1980,0x10),(2100,0x11),(2360,0x12),(2500,0x13),
+        (100,  0x00), (174,  0x01), (343,  0x02), (490,  0x03),
+        (530,  0x04), (680,  0x05), (770,  0x06), (870,  0x07),
+        (1000, 0x08), (1060, 0x09), (1190, 0x0A), (1260, 0x0B),
+        (1400, 0x0C), (1490, 0x0D), (1680, 0x0E), (1800, 0x0F),
+        (1980, 0x10), (2100, 0x11), (2360, 0x12), (2500, 0x13),
     ]
     code = min(table, key=lambda x: abs(x[0] - ma))[1]
-    write_reg(REG_CR1, code & 0x1F)
+    write_reg(REG_CR1, (code & 0x1F))
 
 def set_step_mode(microsteps):
-    modes = {1:0b000,2:0b001,4:0b010,8:0b011,16:0b100,32:0b101,64:0b110,128:0b111}
+    modes = {1: 0b000, 2: 0b001, 4: 0b010, 8: 0b011,
+             16: 0b100, 32: 0b101, 64: 0b110, 128: 0b111}
     write_reg(REG_CR0, modes.get(microsteps, 0b100))
 
 def enable_driver():
     write_reg(REG_CR2, 0x80)
 
 def set_direction(forward: bool):
-    GPIO.output(DIR_PIN, GPIO.HIGH if forward else GPIO.LOW)
+    time.sleep_us(1)
+    DIR_PIN.value(1 if forward else 0)
+    time.sleep_us(1)
 
 def step(delay_us):
-    GPIO.output(STEP_PIN, GPIO.HIGH)
-    time.sleep(delay_us / 1_000_000)
-    GPIO.output(STEP_PIN, GPIO.LOW)
-    time.sleep(delay_us / 1_000_000)
+    STEP_PIN.value(1)
+    time.sleep_us(3)
+    STEP_PIN.value(0)
+    time.sleep_us(3)
+    if delay_us > 0:
+        time.sleep_us(delay_us)
 
 # ── Setup ─────────────────────────────────────────────────────────────
-time.sleep(0.001)
+CS_PIN.value(1)
+time.sleep_ms(1)
 reset_settings()
 set_current_milliamps(1200)
 set_step_mode(16)
 enable_driver()
 
-# ── Input helpers ─────────────────────────────────────────────────────
-def get_speed():
-    """
-    Returns delay in microseconds between steps.
-    Speed range: 1 (fastest, 500us delay) to 10 (slowest, 5000us delay)
-    """
-    while True:
-        try:
-            val = int(input("Speed (1=fast → 10=slow): "))
-            if 1 <= val <= 10:
-                # Map 1–10 → 500us–5000us delay
-                return int(500 + (val - 1) * (5000 - 500) / 9)
-            print("  Please enter a number between 1 and 10.")
-        except ValueError:
-            print("  Numbers only please.")
+# ── Speed map: name → delay in microseconds between steps ────────────
+SPEEDS = {
+    "1": ("Slow",    800),
+    "2": ("Medium",  400),
+    "3": ("Fast",    150),
+    "4": ("Max",      50),   # push the limit — see note below
+}
 
-def get_direction():
-    while True:
-        val = input("Direction (f=forward, r=reverse): ").strip().lower()
-        if val in ("f", "r"):
-            return val == "f"
-        print("  Enter 'f' or 'r'.")
+# ── Main interactive loop ─────────────────────────────────────────────
+print("AMIS-30543 Stepper Controller")
+print("================================")
 
-def get_steps():
-    """Range: 100–50000 steps"""
-    while True:
-        try:
-            val = int(input("Steps to run (100–50000): "))
-            if 100 <= val <= 50000:
-                return val
-            print("  Please enter a number between 100 and 50000.")
-        except ValueError:
-            print("  Numbers only please.")
+while True:
+    # --- Direction ---
+    print("\nDirection:")
+    print("  f = Forward")
+    print("  b = Backward")
+    d = input(">> ").strip().lower()
+    if d not in ("f", "b"):
+        print("Invalid — type f or b")
+        continue
+    forward = (d == "f")
 
-# ── Main loop ─────────────────────────────────────────────────────────
-print("\n── AMIS-30543 Stepper Controller ──")
-print("Press Ctrl+C at any time to stop.\n")
+    # --- Speed ---
+    print("\nSpeed:")
+    for k, (name, delay) in SPEEDS.items():
+        print(f"  {k} = {name}  ({delay}µs delay)")
+    s = input(">> ").strip()
+    if s not in SPEEDS:
+        print("Invalid — pick 1-4")
+        continue
+    speed_name, delay_us = SPEEDS[s]
 
-try:
-    while True:
-        delay_us  = get_speed()
-        forward   = get_direction()
-        num_steps = get_steps()
+    print(f"\nRunning {speed_name} {'Forward' if forward else 'Backward'} — Ctrl+C to stop\n")
 
-        print(f"\nRunning: {'forward' if forward else 'reverse'}, "
-              f"{num_steps} steps, delay={delay_us}µs/step ...\n")
-
-        set_direction(forward)
-        for _ in range(num_steps):
+    set_direction(forward)
+    try:
+        while True:
             step(delay_us)
-
-        print("Done.\n")
-
-except KeyboardInterrupt:
-    print("\nStopped.")
-finally:
-    spi.close()
-    GPIO.cleanup()
-import RPi.GPIO as GPIO
-import spidev
-import time
-
-# ── Pin setup (BCM numbering) ─────────────────────────────────────────
-DIR_PIN  = 2
-STEP_PIN = 3
-
-GPIO.setmode(GPIO.BCM)
-GPIO.setup(DIR_PIN,  GPIO.OUT, initial=GPIO.LOW)
-GPIO.setup(STEP_PIN, GPIO.OUT, initial=GPIO.LOW)
-
-spi = spidev.SpiDev()
-spi.open(0, 0)          # bus 0, CE0 = GPIO8
-spi.max_speed_hz = 500_000
-spi.mode = 0b01         # SPI Mode 1
-
-# ── AMIS-30543 register map ───────────────────────────────────────────
-WR      = 0x80
-REG_CR0 = 0x01
-REG_CR1 = 0x02
-REG_CR2 = 0x03
-REG_CR3 = 0x09
-
-def write_reg(reg, value):
-    spi.xfer2([WR | reg, value])
-
-def reset_settings():
-    for reg in [REG_CR0, REG_CR1, REG_CR2, REG_CR3]:
-        write_reg(reg, 0x00)
-
-def set_current_milliamps(ma):
-    table = [
-        (100,0x00),(174,0x01),(343,0x02),(490,0x03),(530,0x04),
-        (680,0x05),(770,0x06),(870,0x07),(1000,0x08),(1060,0x09),
-        (1190,0x0A),(1260,0x0B),(1400,0x0C),(1490,0x0D),(1680,0x0E),
-        (1800,0x0F),(1980,0x10),(2100,0x11),(2360,0x12),(2500,0x13),
-    ]
-    code = min(table, key=lambda x: abs(x[0] - ma))[1]
-    write_reg(REG_CR1, code & 0x1F)
-
-def set_step_mode(microsteps):
-    modes = {1:0b000,2:0b001,4:0b010,8:0b011,16:0b100,32:0b101,64:0b110,128:0b111}
-    write_reg(REG_CR0, modes.get(microsteps, 0b100))
-
-def enable_driver():
-    write_reg(REG_CR2, 0x80)
-
-def set_direction(forward: bool):
-    GPIO.output(DIR_PIN, GPIO.HIGH if forward else GPIO.LOW)
-
-def step(delay_us):
-    GPIO.output(STEP_PIN, GPIO.HIGH)
-    time.sleep(delay_us / 1_000_000)
-    GPIO.output(STEP_PIN, GPIO.LOW)
-    time.sleep(delay_us / 1_000_000)
-
-# ── Setup ─────────────────────────────────────────────────────────────
-time.sleep(0.001)
-reset_settings()
-set_current_milliamps(1200)
-set_step_mode(16)
-enable_driver()
-
-# ── Input helpers ─────────────────────────────────────────────────────
-def get_speed():
-    """
-    Returns delay in microseconds between steps.
-    Speed range: 1 (fastest, 500us delay) to 10 (slowest, 5000us delay)
-    """
-    while True:
-        try:
-            val = int(input("Speed (1=fast → 10=slow): "))
-            if 1 <= val <= 10:
-                # Map 1–10 → 500us–5000us delay
-                return int(500 + (val - 1) * (5000 - 500) / 9)
-            print("  Please enter a number between 1 and 10.")
-        except ValueError:
-            print("  Numbers only please.")
-
-def get_direction():
-    while True:
-        val = input("Direction (f=forward, r=reverse): ").strip().lower()
-        if val in ("f", "r"):
-            return val == "f"
-        print("  Enter 'f' or 'r'.")
-
-def get_steps():
-    """Range: 100–50000 steps"""
-    while True:
-        try:
-            val = int(input("Steps to run (100–50000): "))
-            if 100 <= val <= 50000:
-                return val
-            print("  Please enter a number between 100 and 50000.")
-        except ValueError:
-            print("  Numbers only please.")
-
-# ── Main loop ─────────────────────────────────────────────────────────
-print("\n── AMIS-30543 Stepper Controller ──")
-print("Press Ctrl+C at any time to stop.\n")
-
-try:
-    while True:
-        delay_us  = get_speed()
-        forward   = get_direction()
-        num_steps = get_steps()
-
-        print(f"\nRunning: {'forward' if forward else 'reverse'}, "
-              f"{num_steps} steps, delay={delay_us}µs/step ...\n")
-
-        set_direction(forward)
-        for _ in range(num_steps):
-            step(delay_us)
-
-        print("Done.\n")
-
-except KeyboardInterrupt:
-    print("\nStopped.")
-finally:
-    spi.close()
-    GPIO.cleanup()
+    except KeyboardInterrupt:
+        print("\nStopped.")
