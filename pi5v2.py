@@ -87,6 +87,13 @@ def detect_ball(frame):
         return None
     return int(cx), int(cy), int(radius)
 
+# HSV diagnostic — remove once calibrated
+    hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    region = hsv_frame[max(0,int(cy)-10):int(cy)+10, max(0,int(cx)-10):int(cx)+10]
+    if region.size > 0:
+        m = region.mean(axis=(0,1))
+        print(f"Ball HSV≈ H:{m[0]:.0f} S:{m[1]:.0f} V:{m[2]:.0f}  radius={int(radius)}")
+
 # ── Tracking parameters ───────────────────────────────────────────────
 DEAD_ZONE   = 30    # pixels — don't move if ball is this close to center
 STEPS_SLOW  = 2     # steps per loop when close
