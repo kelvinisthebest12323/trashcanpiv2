@@ -3,6 +3,7 @@ import numpy as np
 from gpiozero import OutputDevice
 import spidev
 import time
+from picamera2 import Picamera2
 
 # ============================================================
 # MOTOR SETUP (UNCHANGED)
@@ -64,43 +65,45 @@ def step():
     time.sleep(0.000250)
 
 # ============================================================
-# CAMERA + TRACKING
+# CAMERA (PICAMERA2 FIX)
 # ============================================================
 
-LOWER_HSV = np.array([20, 180, 170])
-UPPER_HSV = np.array([35, 255, 255])
+picam2 = Picamera2()
+picam2.configure(picam2.create_preview_configuration(
+    main={"format": "RGB888", "size": (640, 480)}
+))
+picam2.start()
 
-MIN_AREA = 200
 FRAME_W = 640
 FRAME_CENTER_X = FRAME_W // 2
 DEADBAND = 25
-
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_W)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+MIN_AREA = 200
 
 # ============================================================
-# CLICK TO GET HSV
+# HSV RANGE (FIXED FOR YOUR CAMERA SHIFT)
 # ============================================================
+
+LOWER_HSV = np.array([95, 70, 90])
+UPPER_HSV = np.array([140, 200, 200])
+
+# ============================================================
+# CLICK HSV DEBUG
+# ============================================================
+
+current_frame = None
 
 def mouse_callback(event, x, y, flags, param):
-    if event == cv2.EVENT_LBUTTONDOWN:
-        frame = param
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
+    global current_frame
+    if event == cv2.EVENT_LBUTTONDOWN and current_frame is not None:
+        hsv = cv2.cvtColor(current_frame, cv2.COLOR_BGR2HSV)
         h, s, v = hsv[y, x]
-        b, g, r = frame[y, x]
-
-        print("\n--- CLICKED PIXEL ---")
-        print(f"Position: ({x}, {y})")
         print(f"HSV: ({h}, {s}, {v})")
-        print(f"BGR: ({b}, {g}, {r})")
-        print("---------------------\n")
 
 cv2.namedWindow("Tracking")
+cv2.setMouseCallback("Tracking", mouse_callback)
 
 # ============================================================
-# INIT MOTOR
+# MOTOR INIT
 # ============================================================
 
 CS_PIN.on()
@@ -116,11 +119,11 @@ enable_driver()
 
 try:
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            continue
 
-        cv2.setMouseCallback("Tracking", mouse_callback, frame)
+        frame = picam2.capture_array()
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+        current_frame = frame.copy()
 
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         hsv = cv2.GaussianBlur(hsv, (11,11), 0)
@@ -146,7 +149,6 @@ try:
 
                 error = cx - FRAME_CENTER_X
 
-                # DRAW BOX
                 cv2.rectangle(frame, (x,y), (x+w,y+h), (0,255,255), 2)
                 cv2.circle(frame, (cx,cy), 5, (0,0,255), -1)
 
@@ -163,7 +165,6 @@ try:
                             (0,255,0),
                             2)
 
-                # MOTOR CONTROL
                 if abs(error) > DEADBAND:
 
                     set_direction(error > 0)
@@ -189,7 +190,6 @@ try:
             break
 
 finally:
-    cap.release()
     cv2.destroyAllWindows()
     spi.close()
     DIR_PIN.close()
