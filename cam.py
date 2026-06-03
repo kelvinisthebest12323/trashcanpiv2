@@ -1,13 +1,15 @@
-import cv2, numpy as np
-cap = cv2.VideoCapture(0)
+from picamera2 import Picamera2
+import cv2
+
+picam2 = Picamera2()
+picam2.start()
+
 while True:
-    ret, frame = cap.read()
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    # Click a pixel on the ball to print its HSV value
-    def pick(event, x, y, *_):
-        if event == cv2.EVENT_LBUTTONDOWN:
-            print("HSV:", hsv[y, x])
-    cv2.imshow("pick", frame)
-    cv2.setMouseCallback("pick", pick)
-    if cv2.waitKey(1) == 27: break
-cap.release(); cv2.destroyAllWindows()
+    frame = picam2.capture_array()
+
+    cv2.imshow("Camera", frame)
+
+    if cv2.waitKey(1) == 27:  # ESC
+        break
+
+cv2.destroyAllWindows()
