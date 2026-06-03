@@ -6,7 +6,7 @@ import time
 from picamera2 import Picamera2
 
 # ============================================================
-# MOTOR SETUP (UNCHANGED)
+# MOTOR SETUP
 # ============================================================
 
 DIR_PIN  = OutputDevice(2,  initial_value=False)
@@ -56,16 +56,19 @@ def enable_driver():
     write_reg(REG_CR2, 0x80)
 
 def set_direction(forward):
+    time.sleep(0.000001)
     DIR_PIN.on() if forward else DIR_PIN.off()
+    time.sleep(0.000001)
 
 def step():
     STEP_PIN.on()
     time.sleep(0.000003)
     STEP_PIN.off()
-    time.sleep(0.000080)
+    time.sleep(0.000003)
+    time.sleep(0.000250)
 
 # ============================================================
-# CAMERA (PICAMERA2 FIX)
+# CAMERA
 # ============================================================
 
 picam2 = Picamera2()
@@ -80,7 +83,7 @@ DEADBAND = 25
 MIN_AREA = 200
 
 # ============================================================
-# HSV RANGE (FIXED FOR YOUR CAMERA SHIFT)
+# HSV RANGE
 # ============================================================
 
 LOWER_HSV = np.array([95, 70, 90])
@@ -143,7 +146,6 @@ try:
                 ball_found = True
 
                 x, y, w, h = cv2.boundingRect(c)
-
                 cx = x + w // 2
                 cy = y + h // 2
 
@@ -151,12 +153,10 @@ try:
 
                 cv2.rectangle(frame, (x,y), (x+w,y+h), (0,255,255), 2)
                 cv2.circle(frame, (cx,cy), 5, (0,0,255), -1)
-
                 cv2.line(frame,
                          (FRAME_CENTER_X,0),
                          (FRAME_CENTER_X,480),
                          (255,255,255), 1)
-
                 cv2.putText(frame,
                             f"Error: {error}",
                             (10,30),
@@ -166,10 +166,10 @@ try:
                             2)
 
                 if abs(error) > DEADBAND:
-
+                    # FLIPPED: error < 0 means ball is left, motor moves left
                     set_direction(error < 0)
 
-                    steps = min(60, max(1, abs(error)//8))
+                    steps = min(50, max(3, abs(error) // 3))
 
                     for _ in range(steps):
                         step()
