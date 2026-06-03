@@ -62,7 +62,7 @@ def step():
     STEP_PIN.on()
     time.sleep(0.000003)
     STEP_PIN.off()
-    time.sleep(0.000250)
+    time.sleep(0.000080)
 
 # ============================================================
 # CAMERA (PICAMERA2 FIX)
@@ -167,9 +167,9 @@ try:
 
                 if abs(error) > DEADBAND:
 
-                    set_direction(error > 0)
+                    set_direction(error < 0)
 
-                    steps = min(20, max(1, abs(error)//15))
+                    steps = min(60, max(1, abs(error)//8))
 
                     for _ in range(steps):
                         step()
